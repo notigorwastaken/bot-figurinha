@@ -1,4 +1,3 @@
-
 import makeWASocket, {
     DisconnectReason,
     useMultiFileAuthState,
@@ -9,8 +8,11 @@ import { Boom } from '@hapi/boom'
 import qrcode from 'qrcode-terminal'
 import sharp from 'sharp'
 import { createSoundSticker, installSoundStickerPatch } from './sound-sticker.js'
+import { MediaQueue } from './media-queue.js'
 
 installSoundStickerPatch()
+
+const mediaQueue = new MediaQueue(50)
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
@@ -39,6 +41,7 @@ async function connectToWhatsApp() {
             console.log('WhatsApp connected!')
         }
     })
+
     sock.ev.on('call', async (calls) => {
         for (const call of calls) {
             if (call.status !== 'offer') continue
@@ -46,7 +49,8 @@ async function connectToWhatsApp() {
             await sock.rejectCall(call.id, call.from).catch(console.error)
         }
     })
-    sock.ev.on('messages.upsert', async (event) => {
+
+    sock.ev.on('messages.upsert', (event) => {
         if (event.type !== 'notify') return
 
         for (const m of event.messages) {
@@ -57,12 +61,24 @@ async function connectToWhatsApp() {
             if (!jid || jid === 'status@broadcast') continue
 
             const content = normalizeMessageContent(m.message)
+
             console.log('[DEBUG] Tipo de mensagem:', Object.keys(content ?? {}))
             console.log('[DEBUG] Tipo original:', Object.keys(m.message ?? {}))
+
             if (!content) continue
 
-            try {
-                if (content.videoMessage) {
+            const isVideo = Boolean(content.videoMessage)
+            const isImage = Boolean(content.imageMessage)
+
+            if (!isVideo && !isImage) continue
+
+            if (!m.key.id) {
+                console.warn('Media message ignored because it has no message ID:', jid)
+                continue
+            }
+
+            const result = mediaQueue.enqueue(`${jid}:${m.key.id}`, async () => {
+                if (isVideo) {
                     console.log('Video received from:', jid)
 
                     const media = await downloadMediaMessage(
@@ -74,10 +90,8 @@ async function connectToWhatsApp() {
                     await createSoundSticker(sock, jid, media, m)
 
                     console.log('Sound sticker sent successfully!')
-                    continue
+                    return
                 }
-
-                if (!content.imageMessage) continue
 
                 console.log('Image received from:', jid)
 
@@ -115,8 +129,12 @@ async function connectToWhatsApp() {
                 )
 
                 console.log('Sticker sent successfully!')
-            } catch (error) {
-                console.error('Error processing media:', error)
+            })
+
+            if (result === 'duplicate') {
+                console.log('Duplicate media message ignored:', m.key.id)
+            } else if (result === 'full') {
+                console.warn('Media queue is full. Message ignored:', m.key.id)
             }
         }
     })
