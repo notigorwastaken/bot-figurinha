@@ -12,7 +12,7 @@ import { MediaQueue } from './media-queue.js'
 
 installSoundStickerPatch()
 
-const mediaQueue = new MediaQueue(50)
+const mediaQueue = new MediaQueue(500)
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
