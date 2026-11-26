@@ -100,10 +100,10 @@ async function convertSticker(input: string, webp: string, duration: number) {
             '-vf',
             [
                 `fps=${fps}`,
-                `scale=${detail}:${detail}:force_original_aspect_ratio=decrease`,
-                'scale=iw*512/max(iw\\,ih):ih*512/max(iw\\,ih)',
-                'format=rgba',
-                'pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0'
+                `scale=${detail}:${detail}:force_original_aspect_ratio=increase`,
+                'crop=512:512',
+                'setsar=1',
+                'format=rgba'
             ].join(','),
             '-c:v', 'libwebp_anim',
             '-lossless', '0',
