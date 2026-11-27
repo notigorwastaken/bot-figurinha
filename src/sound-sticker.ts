@@ -3,6 +3,9 @@ import {
     generateWAMessageFromContent,
     proto
 } from '@whiskeysockets/baileys'
+import * as nsfw from 'nsfwjs'
+import * as tf from '@tensorflow/tfjs'
+import sharp from 'sharp'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import fs from 'node:fs'
@@ -22,6 +25,90 @@ const STICKER_TAG = tag(26)
 const STICKER_AUDIO_TAG = tag(26)
 
 let patched = false
+
+const NSFW_THRESHOLDS = {
+    Porn: 0.35,
+    Hentai: 0.35,
+    Sexy: 0.75
+}
+
+let nsfwModelPromise: ReturnType<typeof nsfw.load> | null = null
+
+async function getNsfwModel() {
+    if (!nsfwModelPromise) {
+        nsfwModelPromise = (async () => {
+            await tf.setBackend('cpu')
+            await tf.ready()
+            return nsfw.load()
+        })()
+    }
+
+    return nsfwModelPromise
+}
+
+async function checkNsfw(input: string, directory: string) {
+    const framesDirectory = path.join(directory, 'nsfw-frames')
+
+    fs.mkdirSync(framesDirectory, { recursive: true })
+
+    await execFileAsync('ffmpeg', [
+        '-y',
+        '-i', input,
+        '-vf',
+        'fps=2,scale=224:224:force_original_aspect_ratio=decrease,pad=224:224:(ow-iw)/2:(oh-ih)/2',
+        '-frames:v', '20',
+        '-q:v', '5',
+        path.join(framesDirectory, 'frame-%03d.jpg')
+    ])
+
+    const model = await getNsfwModel()
+
+    const frames = fs.readdirSync(framesDirectory)
+        .filter(file => file.endsWith('.jpg'))
+        .sort()
+
+    if (frames.length === 0) {
+        throw new Error('Não foi possível analisar os frames do vídeo.')
+    }
+
+    for (const frame of frames) {
+        const framePath = path.join(framesDirectory, frame)
+
+        const {
+            data,
+            info
+        } = await sharp(framePath)
+            .removeAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true })
+
+        const tensor = tf.tensor3d(
+            new Uint8Array(data),
+            [info.height, info.width, info.channels]
+        )
+
+        try {
+            const predictions = await model.classify(tensor)
+
+            const detected = predictions.find(prediction => {
+                const threshold = NSFW_THRESHOLDS[
+                    prediction.className as keyof typeof NSFW_THRESHOLDS
+                ]
+
+                return threshold !== undefined &&
+                    prediction.probability >= threshold
+            })
+
+            if (detected) {
+                throw new Error(
+                    `Conteúdo NSFW detectado (${detected.className}).`
+                )
+            }
+        } finally {
+            tensor.dispose()
+        }
+    }
+}
 
 export function installSoundStickerPatch() {
     if (patched) return
@@ -155,6 +242,8 @@ export async function createSoundSticker(
         fs.writeFileSync(input, video)
 
         const duration = await probeVideo(input)
+
+        await checkNsfw(input, directory)
 
         await convertSticker(input, webp, duration)
         await convertAudio(input, ogg, duration)

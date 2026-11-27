@@ -98,6 +98,7 @@ async function connectToWhatsApp() {
             }
 
             const result = mediaQueue.enqueue(`${jid}:${m.key.id}`, async () => {
+
                 if (isVideo) {
                     console.log('Video received from:', jid)
 
@@ -107,9 +108,43 @@ async function connectToWhatsApp() {
                         {}
                     ) as Buffer
 
-                    await createSoundSticker(sock, jid, media, m)
+                    try {
+                        await createSoundSticker(
+                            sock,
+                            jid,
+                            media,
+                            m
+                        )
 
-                    console.log('Sound sticker sent successfully!')
+                        console.log('Sound sticker sent successfully!')
+                    } catch (error: any) {
+                        if (error.message?.includes('Conteúdo NSFW detectado')) {
+                            await sock.sendMessage(
+                                jid,
+                                {
+                                    text: '🚫 Conteúdo impróprio detectado! A criação da figurinha foi bloqueada.'
+                                },
+                                {
+                                    quoted: m
+                                }
+                            )
+
+                            return
+                        }
+
+                        console.error('[STICKER ERROR]', error)
+
+                        await sock.sendMessage(
+                            jid,
+                            {
+                                text: '❌ Não foi possível processar o vídeo.'
+                            },
+                            {
+                                quoted: m
+                            }
+                        )
+                    }
+
                     return
                 }
 
@@ -171,6 +206,4 @@ process.on('unhandledRejection', (reason) => {
 
 process.on('uncaughtException', (error) => {
     console.error('[UNCAUGHT EXCEPTION]', error);
-
-    process.exit(1);
 });
