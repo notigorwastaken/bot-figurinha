@@ -2,23 +2,27 @@ import makeWASocket, {
     DisconnectReason,
     useMultiFileAuthState,
     downloadMediaMessage,
-    normalizeMessageContent
+    normalizeMessageContent,
+    GroupMetadata
 } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import qrcode from 'qrcode-terminal'
 import sharp from 'sharp'
 import { createSoundSticker, installSoundStickerPatch } from './sound-sticker.js'
 import { MediaQueue } from './media-queue.js'
+import NodeCache from '@cacheable/node-cache'
+import { startServer } from './express/index.js'
 
 installSoundStickerPatch()
-
+export const groupCache = new NodeCache<GroupMetadata>({ stdTTL: 5 * 60, useClones: false })
 const mediaQueue = new MediaQueue(500)
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
 
     const sock = makeWASocket({
-        auth: state
+        auth: state,
+        cachedGroupMetadata: async (jid: string) => groupCache.get(jid) as any,
     })
 
     sock.ev.on('connection.update', (update) => {
@@ -49,7 +53,17 @@ async function connectToWhatsApp() {
             await sock.rejectCall(call.id, call.from).catch(console.error)
         }
     })
+    sock.ev.on('groups.update', async ([event]) => {
+        const id = (event as { id: string }).id as string;
+        const metadata = await sock.groupMetadata(id)
+        groupCache.set(id, metadata)
+    })
 
+    sock.ev.on('group-participants.update', async (event: any) => {
+        const id = (event as { id: string }).id as string;
+        const metadata = await sock.groupMetadata(id)
+        groupCache.set(id, metadata)
+    })
     sock.ev.on('messages.upsert', (event) => {
         if (event.type !== 'notify') return
 
@@ -140,6 +154,7 @@ async function connectToWhatsApp() {
     })
 
     sock.ev.on('creds.update', saveCreds)
+    await startServer(groupCache, sock);
 }
 
 connectToWhatsApp()
