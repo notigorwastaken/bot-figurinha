@@ -3,9 +3,11 @@ import makeWASocket, {
     useMultiFileAuthState,
     downloadMediaMessage,
     normalizeMessageContent,
-    GroupMetadata
+    GroupMetadata,
+    makeCacheableSignalKeyStore
 } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
+import P from 'pino'
 import qrcode from 'qrcode-terminal'
 import sharp from 'sharp'
 import { createSoundSticker, installSoundStickerPatch } from './sound-sticker.js'
@@ -13,6 +15,7 @@ import { MediaQueue } from './media-queue.js'
 import NodeCache from '@cacheable/node-cache'
 import { startServer } from './express/index.js'
 
+const logger = P({ level: 'silent' })
 installSoundStickerPatch()
 export const groupCache = new NodeCache<GroupMetadata>({ stdTTL: 5 * 60, useClones: false })
 const mediaQueue = new MediaQueue(500)
@@ -21,7 +24,10 @@ async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
 
     const sock = makeWASocket({
-        auth: state,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger),
+        },
         cachedGroupMetadata: async (jid: string) => groupCache.get(jid) as any,
     })
 
@@ -33,16 +39,16 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect =
-                (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut
-
-            console.log('Connection closed:', lastDisconnect?.error)
+            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut
 
             if (shouldReconnect) {
                 connectToWhatsApp()
+            } else {
+                console.log('Logged out. Delete the auth folder and re-scan to reconnect.')
             }
         } else if (connection === 'open') {
-            console.log('WhatsApp connected!')
+            console.log('Connected to WhatsApp')
         }
     })
 
@@ -158,3 +164,13 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp()
+
+process.on('unhandledRejection', (reason) => {
+    console.error('[UNHANDLED REJECTION]', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('[UNCAUGHT EXCEPTION]', error);
+
+    process.exit(1);
+});
